@@ -1,4 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { GlobalWorkerOptions, getDocument } from 'pdfjs-dist';
+import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+
+GlobalWorkerOptions.workerSrc = pdfWorker;
 
 const KeyIcon = () => (
   <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -154,7 +158,7 @@ const parseCsvLine = (line, delimiter) => {
   return result.map((cell) => cell.replace(/^["']|["']$/g, ''));
 };
 
-const isMarkerLine = (line) => /^---\s*(?:JOB SHEET|SHEET)\b/i.test(line);
+const isMarkerLine = (line) => /^---\s*(?:JOB SHEET|SHEET|PAGE)\b/i.test(line);
 
 const looksLikeHeaderRow = (cells) => {
   if (cells.length < 2) return false;
@@ -262,6 +266,26 @@ const parseJobSheetDocument = (text) => {
   }).filter((job) => job.technician || job.vehicleId);
 };
 
+const extractPdfText = async (arrayBuffer) => {
+  const pdf = await getDocument({ data: arrayBuffer }).promise;
+  const pages = [];
+
+  for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++) {
+    const page = await pdf.getPage(pageNumber);
+    const content = await page.getTextContent();
+    const pageText = content.items
+      .map((item) => `${item.str}${item.hasEOL ? '\n' : ' '}`)
+      .join('')
+      .trim();
+
+    if (pageText) {
+      pages.push(`--- PAGE ${pageNumber} ---\n${pageText}`);
+    }
+  }
+
+  return pages.join('\n\n');
+};
+
 export default function App() {
   const [apiKey, setApiKey] = useState(() => {
     return localStorage.getItem('hash_analyze_key') || '';
@@ -272,7 +296,7 @@ export default function App() {
   const [messages, setMessages] = useState([
     {
       role: 'assistant',
-      text: "Hello! I am your **Hash-analyze AI Auditor**. Paste your job sheets, upload an Excel workbook, or ask me to perform cross-referencing audit analysis using **Gemini 2.5**.",
+      text: "Hello! I am your **Hash-analyze AI Auditor**. Paste your job sheets, upload Excel or PDF documents, or ask me to perform cross-referencing audit analysis using **Gemini 2.5**.",
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     }
   ]);
@@ -391,6 +415,22 @@ export default function App() {
           showNotification('success', `Imported Excel Workbook: ${file.name}`);
         } catch (err) {
           showNotification('error', `Failed to read Excel format: ${err.message}`);
+        }
+      };
+      reader.readAsArrayBuffer(file);
+    } else if (fileExtension === 'pdf') {
+      const reader = new FileReader();
+      reader.onload = async (evt) => {
+        try {
+          const text = await extractPdfText(evt.target.result);
+          if (!text.trim()) {
+            showNotification('error', 'No extractable text found in PDF. Scanned/image PDFs require OCR.');
+            return;
+          }
+          setRawText(text.trim());
+          showNotification('success', `Imported PDF: ${file.name}`);
+        } catch (err) {
+          showNotification('error', `Failed to read PDF: ${err.message}`);
         }
       };
       reader.readAsArrayBuffer(file);
@@ -686,7 +726,7 @@ export default function App() {
             </div>
 
             <p className="text-xs text-slate-400 leading-relaxed">
-              Paste raw CSV logs, or upload custom job sheets. You can now drag-and-drop or select standard Excel sheets (<code className="text-amber-400">.xlsx</code> / <code className="text-amber-400">.xls</code>) to inspect them dynamically.
+              Paste raw CSV logs, or upload custom job sheets. Supports Excel (<code className="text-amber-400">.xlsx</code> / <code className="text-amber-400">.xls</code>), PDF documents (<code className="text-amber-400">.pdf</code>), and plain text files.
             </p>
 
             <textarea
@@ -701,10 +741,10 @@ export default function App() {
                 <svg className="w-4 h-4 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
                 </svg>
-                <span className="font-semibold text-slate-200">Import Excel, CSV, or Text</span>
+                <span className="font-semibold text-slate-200">Import Excel, CSV, PDF, or Text</span>
                 <input
                   type="file"
-                  accept=".txt,.csv,.json,.log,.xlsx,.xls"
+                  accept=".txt,.csv,.json,.log,.xlsx,.xls,.pdf"
                   onChange={handleFileUpload}
                   className="hidden"
                 />
@@ -719,7 +759,7 @@ export default function App() {
             {xlsxLoaded ? (
               <div className="bg-emerald-950/20 border border-emerald-500/20 text-emerald-400/90 text-[10px] px-3 py-1.5 rounded-lg flex items-center space-x-2">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                <span>Excel Spreadsheet Engine Active</span>
+                <span>Excel & PDF document engines active</span>
               </div>
             ) : (
               <div className="bg-slate-950/40 border border-slate-800 text-slate-500 text-[10px] px-3 py-1.5 rounded-lg flex items-center space-x-2">
