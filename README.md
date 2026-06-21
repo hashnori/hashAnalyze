@@ -40,8 +40,8 @@ Since this is a single-file application structure optimized for fast deployments
 
 Clone the repository:
 
-git clone https://github.com/your-username/hash-analyze.git
-cd hash-analyze
+git clone [https://github.com/hashnori/hashAnalyze.git](https://github.com/hashnori/hashAnalyze.git)
+cd hashAnalyze
 
 
 Run on Local Server:
@@ -58,6 +58,34 @@ Visit Google AI Studio.
 Generate an API key.
 
 Paste it into the top bar of Hash-analyze to activate full artificial intelligence reasoning.
+
+☁️ Cloud Deployment (Vercel / Netlify / Cloudflare)
+
+This application is fully optimized for zero-config deployments on cloud platforms like Vercel (running on nodes such as iad1 Washington, D.C.).
+
+1. Import Git Repository
+
+Connect your GitHub account to Vercel and import the repository hashnori/hashAnalyze.
+
+2. Configure Build Settings
+
+Vercel automatically detects standard React bundlers (like Vite) and pre-configures the build pipeline:
+
+Framework Preset: Vite (or Create React App)
+
+Build Command: npm run build
+
+Output Directory: dist (or build)
+
+3. Environment Security
+
+To keep your API key secure without hardcoding, you can optionally configure an environment variable inside the Vercel dashboard:
+
+Key: VITE_GEMINI_API_KEY
+
+Value: Your Gemini API Key
+
+The app will automatically look for this key on startup!
 
 📋 Sample Sheet Structure
 
