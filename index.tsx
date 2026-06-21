@@ -120,6 +120,148 @@ Status: Fully Completed
 Audit Status: Passed
 Notes: Mounted ultra-durable camera high on the headboard of flatbed. Inter-vehicle heavy duty connector installed to allow fast trailer detachment. Audio feed confirmed clear.`;
 
+const stripBom = (text) => text.replace(/^\uFEFF/, '');
+
+const detectDelimiter = (line) => {
+  if (line.includes('\t')) return '\t';
+  if (line.includes(';')) return ';';
+  return ',';
+};
+
+const parseCsvLine = (line, delimiter) => {
+  const result = [];
+  let current = '';
+  let inQuotes = false;
+
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+    if (char === '"') {
+      if (inQuotes && line[i + 1] === '"') {
+        current += '"';
+        i++;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (char === delimiter && !inQuotes) {
+      result.push(current.trim());
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+
+  result.push(current.trim());
+  return result.map((cell) => cell.replace(/^["']|["']$/g, ''));
+};
+
+const isMarkerLine = (line) => /^---\s*(?:JOB SHEET|SHEET)\b/i.test(line);
+
+const looksLikeHeaderRow = (cells) => {
+  if (cells.length < 2) return false;
+  const headers = cells.map((cell) => cell.toLowerCase());
+  return headers.some((header) =>
+    header.includes('date') ||
+    header.includes('tech') ||
+    header.includes('vehicle') ||
+    header.includes('install') ||
+    header.includes('audit') ||
+    header.includes('hour') ||
+    header.includes('duration')
+  );
+};
+
+const findHeaderRowIndex = (lines) => {
+  for (let i = 0; i < lines.length; i++) {
+    if (isMarkerLine(lines[i])) continue;
+    const delimiter = detectDelimiter(lines[i]);
+    const cells = parseCsvLine(lines[i], delimiter);
+    if (looksLikeHeaderRow(cells)) return i;
+  }
+  return -1;
+};
+
+const findColumnIndex = (headers, patterns) => {
+  for (const pattern of patterns) {
+    const idx = headers.findIndex((header) => pattern.test(header));
+    if (idx !== -1) return idx;
+  }
+  return -1;
+};
+
+const parseTabularDocument = (text) => {
+  const lines = stripBom(text)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const headerRowIndex = findHeaderRowIndex(lines);
+  if (headerRowIndex === -1) return null;
+
+  const delimiter = detectDelimiter(lines[headerRowIndex]);
+  const headers = parseCsvLine(lines[headerRowIndex], delimiter).map((header) =>
+    header.toLowerCase().trim()
+  );
+
+  const dateIdx = findColumnIndex(headers, [/date/]);
+  const techIdx = findColumnIndex(headers, [/technician/, /\btech\b/, /installer/, /engineer/]);
+  const vehicleIdx = findColumnIndex(headers, [/vehicle\s*id/, /vehicle/, /\bcar\b/, /truck/, /fleet/]);
+  const typeIdx = findColumnIndex(headers, [/install/, /\btype\b/]);
+  const equipIdx = findColumnIndex(headers, [/equip/, /part/, /tool/, /material/]);
+  const durationIdx = findColumnIndex(headers, [/time taken/, /hours?/, /duration/]);
+  const auditIdx = findColumnIndex(headers, [/audit/, /inspect/, /\bqa\b/]);
+  const statusIdx = headers.findIndex(
+    (header) => (header.includes('status') || header.includes('state')) && !header.includes('audit')
+  );
+
+  const getCell = (cols, idx, fallback = '') =>
+    idx !== -1 && cols[idx] !== undefined && cols[idx] !== '' ? cols[idx] : fallback;
+
+  return lines.slice(headerRowIndex + 1)
+    .filter((line) => !isMarkerLine(line))
+    .map((line, index) => {
+      const cols = parseCsvLine(line, delimiter);
+      if (cols.every((cell) => !cell)) return null;
+
+      return {
+        id: `CSV-${101 + index}`,
+        date: getCell(cols, dateIdx, '2026-06-21'),
+        technician: getCell(cols, techIdx, 'Unknown Tech'),
+        vehicleId: getCell(cols, vehicleIdx, 'VT-UNK'),
+        installType: getCell(cols, typeIdx, 'General Camera Mount'),
+        equipment: getCell(cols, equipIdx, 'Standard Kit'),
+        time: durationIdx !== -1 ? (parseFloat(getCell(cols, durationIdx)) || 1.5) : 1.5,
+        status: getCell(cols, statusIdx, 'Completed'),
+        audit: getCell(cols, auditIdx, 'Passed'),
+        raw: line,
+      };
+    })
+    .filter(Boolean);
+};
+
+const parseJobSheetDocument = (text) => {
+  const templateChunks = text.split(/--- JOB SHEET #\d+ ---/gi).map((chunk) => chunk.trim()).filter(Boolean);
+
+  return templateChunks.map((sheet, index) => {
+    const data = { id: `JOB-${100 + index}`, raw: sheet };
+    sheet.split('\n').forEach((line) => {
+      const parts = line.split(':');
+      if (parts.length >= 2) {
+        const key = parts[0].trim().toLowerCase();
+        const val = parts.slice(1).join(':').trim();
+        if (key.includes('date')) data.date = val;
+        if (key.includes('technician')) data.technician = val;
+        if (key.includes('vehicle id')) data.vehicleId = val;
+        if (key.includes('installation type')) data.installType = val;
+        if (key.includes('equipment used')) data.equipment = val;
+        if (key.includes('time taken')) data.time = parseFloat(val) || 0;
+        if (key.includes('status') && !key.includes('audit')) data.status = val;
+        if (key.includes('audit status') || key.includes('audit')) data.audit = val;
+      }
+    });
+    return data;
+  }).filter((job) => job.technician || job.vehicleId);
+};
+
 export default function App() {
   const [apiKey, setApiKey] = useState(() => {
     return localStorage.getItem('hash_analyze_key') || '';
@@ -195,63 +337,20 @@ export default function App() {
         return;
       }
 
-      const templateChunks = text.split(/--- JOB SHEET #\d+ ---/gi).map(s => s.trim()).filter(Boolean);
-      const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
-      const isTabular = lines.length > 1 && (lines[0].includes(',') || lines[0].includes('\t') || lines[0].includes(';'));
+      const hasJobSheets = /--- JOB SHEET #\d+ ---/i.test(text);
+      const tabularRows = parseTabularDocument(text);
 
-      if (isTabular && templateChunks.length <= 1) {
-        const delimiter = lines[0].includes('\t') ? '\t' : lines[0].includes(';') ? ';' : ',';
-        const headers = lines[0].toLowerCase().split(delimiter).map(h => h.trim().replace(/["']/g, ''));
-        
-        const dateIdx = headers.findIndex(h => h.includes('date'));
-        const techIdx = headers.findIndex(h => h.includes('tech') || h.includes('name'));
-        const vehicleIdx = headers.findIndex(h => h.includes('vehicle') || h.includes('car') || h.includes('truck') || h.includes('id'));
-        const typeIdx = headers.findIndex(h => h.includes('type') || h.includes('install'));
-        const equipIdx = headers.findIndex(h => h.includes('equip') || h.includes('part') || h.includes('tool'));
-        const durationIdx = headers.findIndex(h => h.includes('time') || h.includes('hour') || h.includes('duration'));
-        const statusIdx = headers.findIndex(h => h.includes('status') || h.includes('state'));
-        const auditIdx = headers.findIndex(h => h.includes('audit') || h.includes('inspect'));
-
-        const parsedRows = lines.slice(1).map((line, index) => {
-          const cols = line.split(delimiter).map(c => c.trim().replace(/["']/g, ''));
-          return {
-            id: `XLS-${101 + index}`,
-            date: dateIdx !== -1 && cols[dateIdx] ? cols[dateIdx] : '2026-06-21',
-            technician: techIdx !== -1 && cols[techIdx] ? cols[techIdx] : 'Unknown Tech',
-            vehicleId: vehicleIdx !== -1 && cols[vehicleIdx] ? cols[vehicleIdx] : 'VT-UNK',
-            installType: typeIdx !== -1 && cols[typeIdx] ? cols[typeIdx] : 'General Camera Mount',
-            equipment: equipIdx !== -1 && cols[equipIdx] ? cols[equipIdx] : 'Standard Kit',
-            time: durationIdx !== -1 ? (parseFloat(cols[durationIdx]) || 1.5) : 1.5,
-            status: statusIdx !== -1 && cols[statusIdx] ? cols[statusIdx] : 'Completed',
-            audit: auditIdx !== -1 && cols[auditIdx] ? cols[auditIdx] : 'Passed',
-            raw: line
-          };
-        });
-
-        setStructuredJobs(parsedRows.filter(r => r.technician && r.vehicleId));
-      } else {
-        const parsed = templateChunks.map((sheet, index) => {
-          const sLines = sheet.split('\n');
-          const data = { id: `JOB-${100 + index}`, raw: sheet };
-          sLines.forEach(line => {
-            const parts = line.split(':');
-            if (parts.length >= 2) {
-              const key = parts[0].trim().toLowerCase();
-              const val = parts.slice(1).join(':').trim();
-              if (key.includes('date')) data.date = val;
-              if (key.includes('technician')) data.technician = val;
-              if (key.includes('vehicle id')) data.vehicleId = val;
-              if (key.includes('installation type')) data.installType = val;
-              if (key.includes('equipment used')) data.equipment = val;
-              if (key.includes('time taken')) data.time = parseFloat(val) || 0;
-              if (key.includes('status')) data.status = val;
-              if (key.includes('audit status')) data.audit = val;
-            }
-          });
-          return data;
-        });
-        setStructuredJobs(parsed.filter(j => j.technician || j.vehicleId));
+      if (tabularRows && tabularRows.length > 0) {
+        setStructuredJobs(tabularRows);
+        return;
       }
+
+      if (hasJobSheets) {
+        setStructuredJobs(parseJobSheetDocument(text));
+        return;
+      }
+
+      setStructuredJobs([]);
     } catch (err) {
       setStructuredJobs([]);
     }
